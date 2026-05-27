@@ -2,22 +2,16 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
 import re
 import sublime
 import time
 import zipfile
 from io import BytesIO
+from pathlib import Path
+from typing import override
 from urllib.request import Request as HttpRequest, urlopen, urlretrieve
 
-from LSP.plugin import (
-    AbstractPlugin,
-    ClientConfig,
-    WorkspaceFolder,
-    filename_to_uri,
-    register_plugin,
-    unregister_plugin,
-)
+from LSP.plugin import LspPlugin, OnPreStartContext, filename_to_uri
 
 __all__ = ["LemminxPlugin", "plugin_loaded", "plugin_unloaded"]
 
@@ -26,15 +20,13 @@ class BaseServerHandler:
     server_version: str = ""
 
     @classmethod
-    def needs_update_or_installation(cls):
-        server_file = cls.server_binary()
-        is_upgrade = os.path.isfile(server_file)
-        if is_upgrade:
+    def needs_update_or_installation(cls, server_binary: Path, server_version: str):
+        if server_binary.is_file():
             next_update_check, server_version = cls.load_metadata()
         else:
             next_update_check, server_version = 0, ""
 
-        cls.server_version = str(LemminxPlugin.settings.get("server_version", "latest"))
+        cls.server_version = server_version
         if cls.server_version == "latest":
             if int(time.time()) >= next_update_check:
                 try:
@@ -57,14 +49,14 @@ class BaseServerHandler:
         raise NotImplementedError()
 
     @classmethod
-    def server_binary(cls) -> str:
+    def server_binary(cls) -> Path:
         """
         Build and return absolute path to installed language server binary.
         """
         raise NotImplementedError()
 
     @classmethod
-    def metadata_file(cls) -> str:
+    def metadata_file(cls) -> Path:
         """
         Build and return absolute path to meta data file
         storing language server's version and checksum.
@@ -119,35 +111,27 @@ class BinaryServerHandler(BaseServerHandler):
     # API methods
 
     @classmethod
-    def install_or_update(cls) -> None:
-        if not cls.server_version:
-            raise RuntimeError()
-
+    def on_pre_start_async(cls, context: OnPreStartContext) -> None:
         server_binary = cls.server_binary()
-        server_path, server_name = os.path.split(server_binary)
 
-        # downlad and unzip server binary (ignore any other files)
-        with contextlib.closing(urlopen(cls.download_url())) as response:
-            with zipfile.ZipFile(BytesIO(response.read())) as arc:
-                arc.extractall(server_path)
+        if cls.needs_update_or_installation(server_binary, context.configuration.server_version):
+            server_path = server_binary.parent
+            server_path.mkdir(parents=True, exist_ok=True)
 
-        os.chmod(server_binary, 0o755)
+            # downlad and unzip server binary (ignore any other files)
+            with contextlib.closing(urlopen(cls.download_url())) as response:
+                with zipfile.ZipFile(BytesIO(response.read())) as arc:
+                    arc.extractall(server_path)
 
-        # write update cookie
-        cls.save_metadata(True, cls.server_version)
+            server_binary.chmod(0o755)
 
-    @classmethod
-    def can_start(
-        cls,
-        window: sublime.Window,
-        initiating_view: sublime.View,
-        workspace_folders: list[WorkspaceFolder],
-        configuration: ClientConfig,
-    ) -> str | None:
-        configuration.command = [cls.server_binary()]
-        additional_args = LemminxPlugin.settings.get("server_binary_args", [])
+            # write update cookie
+            cls.save_metadata(True, cls.server_version)
+
+        context.configuration.command = [str(server_binary)]
+        additional_args = context.configuration.server_binary_args
         if additional_args:
-            configuration.command.extend(additional_args)
+            context.configuration.command.extend(additional_args)
 
     # server specific methods
 
@@ -177,11 +161,11 @@ class BinaryServerHandler(BaseServerHandler):
             raise RuntimeError("Binary server not supported on this platform!")
 
     @classmethod
-    def metadata_file(cls) -> str:
-        return os.path.join(LemminxPlugin.server_path(), "binary_server.json")
+    def metadata_file(cls) -> Path:
+        return LemminxPlugin.plugin_storage_path / "binary_server.json"
 
     @classmethod
-    def server_binary(cls) -> str:
+    def server_binary(cls) -> Path:
         names = {
             "linux-x64": "lemminx-linux" if version_tuple(cls.server_version) < version_tuple('0.29.1') else "lemminx-linux-x86_64",
             "osx-arm64": "lemminx-osx-aarch_64",
@@ -190,7 +174,7 @@ class BinaryServerHandler(BaseServerHandler):
         }
         try:
             name = names[f"{sublime.platform()}-{sublime.arch()}"]
-            return os.path.join(LemminxPlugin.server_path(), name)
+            return LemminxPlugin.plugin_storage_path / name
         except KeyError:
             raise RuntimeError("Binary server not supported on this platform!")
 
@@ -236,26 +220,21 @@ class JavaServerHandler(BaseServerHandler):
     # API methods
 
     @classmethod
-    def install_or_update(cls) -> None:
-        if not cls.server_version:
-            raise RuntimeError()
+    def on_pre_start_async(cls, context: OnPreStartContext) -> None:
+        server_binary = cls.server_binary()
 
-        urlretrieve(cls.download_url(), cls.server_binary())
-        # write update cookie
-        cls.save_metadata(True, cls.server_version)
+        if cls.needs_update_or_installation(server_binary, context.configuration.server_version):
+            server_path = server_binary.parent
+            server_path.mkdir(parents=True, exist_ok=True)
 
-    @classmethod
-    def can_start(
-        cls,
-        window: sublime.Window,
-        initiating_view: sublime.View,
-        workspace_folders: list[WorkspaceFolder],
-        configuration: ClientConfig,
-    ) -> str | None:
-        configuration.command = ["java", "-jar", cls.server_binary()]
-        additional_args = LemminxPlugin.settings.get("java_vmargs", [])
+            urlretrieve(cls.download_url(), server_binary)
+            # write update cookie
+            cls.save_metadata(True, cls.server_version)
+
+        context.configuration.command = ["java", "-jar", str(server_binary)]
+        additional_args = context.configuration.java_vmargs
         if additional_args:
-            configuration.command.extend(additional_args)
+            context.configuration.command.extend(additional_args)
 
     # server specific methods
 
@@ -282,15 +261,15 @@ class JavaServerHandler(BaseServerHandler):
         return f"{cls.repo_url()}/{cls.server_version}/org.eclipse.lemminx-{cls.server_version}-uber.jar"
 
     @classmethod
-    def metadata_file(cls) -> str:
-        return os.path.join(LemminxPlugin.server_path(), "java_server.json")
+    def metadata_file(cls) -> Path:
+        return LemminxPlugin.plugin_storage_path / "java_server.json"
 
     @classmethod
-    def server_binary(cls) -> str:
-        return os.path.join(LemminxPlugin.server_path(), "lemminx.jar")
+    def server_binary(cls) -> Path:
+        return LemminxPlugin.plugin_storage_path / "lemminx.jar"
 
 
-class LemminxPlugin(AbstractPlugin):
+class LemminxPlugin(LspPlugin):
 
     file_associations: list[dict[str, str]] = [
         {
@@ -324,80 +303,43 @@ class LemminxPlugin(AbstractPlugin):
     package with different name.
     """
 
-    settings: sublime.Settings
-    """
-    Package settings
-    """
-
     _server: type[BinaryServerHandler] | type[JavaServerHandler] | None = None
 
     # LSP API methods
 
     @classmethod
-    def name(cls) -> str:
-        return "LemMinX"
-
-    @classmethod
-    def configuration(cls) -> tuple[sublime.Settings, str]:
-        settings_file_name = "LSP-lemminx.sublime-settings"
-        cls.settings = sublime.load_settings(settings_file_name)
-        return cls.settings, f"Packages/{cls.package_name}/{settings_file_name}"
-
-    @classmethod
-    def needs_update_or_installation(cls) -> bool:
-        return cls.server().needs_update_or_installation()
-
-    @classmethod
-    def install_or_update(cls) -> None:
-        os.makedirs(cls.server_path(), exist_ok=True)
-        return cls.server().install_or_update()
-
-    @classmethod
-    def can_start(
-        cls,
-        window: sublime.Window,
-        initiating_view: sublime.View,
-        workspace_folders: list[WorkspaceFolder],
-        configuration: ClientConfig,
-    ) -> str | None:
+    @override
+    def on_pre_start_async(cls, context: OnPreStartContext) -> None:
         # add hard-coded and dynamic settings (not advertised via schema)
-        configuration.settings.set(
+        context.configuration.settings.set(
             "xml.fileAssociations",
-            cls.file_associations + (configuration.settings.get("xml.fileAssociations") or []),
+            cls.file_associations + (context.configuration.settings.get("xml.fileAssociations") or []),
         )
-        configuration.settings.set("xml.server.workDir", cls.server_path())
-        configuration.settings.set("xml.telemetry.enabled", False)
+        context.configuration.settings.set("xml.server.workDir", "$server_path")
+        context.configuration.settings.set("xml.telemetry.enabled", False)
         # apply settings to initialization options
-        configuration.initialization_options.set("settings.xml", configuration.settings.get("xml"))
+        context.configuration.initialization_options.set("settings.xml", context.configuration.settings.get("xml"))
         # apply hard coded initialization options
-        configuration.initialization_options.set("extendedClientCapabilities", {
+        context.configuration.initialization_options.set("extendedClientCapabilities", {
             "actionableNotificationSupport": False,
             "openSettingsCommandSupport": False,
             "bindingWizardSupport": False,
             "shouldLanguageServerExitOnShutdown": True,
         })
+
+        # register additional variables
+        context.variables["package_path"] = str(cls.package_path())
+        context.variables["server_path"] = str(cls.plugin_storage_path)
+        context.variables["package_uri"] = cls.package_uri()
+        context.variables["server_uri"] = cls.server_uri()
+
         # forward request to server provider
-        return cls.server().can_start(window, initiating_view, workspace_folders, configuration)
-
-    # LemMinX specific methods
-
-    @classmethod
-    def server(cls) -> type[BinaryServerHandler] | type[JavaServerHandler]:
         if cls._server is None:
-            if cls.settings.get("server_binary", True) and BinaryServerHandler.is_supported():
+            if context.configuration.server_binary and BinaryServerHandler.is_supported():
                 cls._server = BinaryServerHandler
             else:
                 cls._server = JavaServerHandler
-        return cls._server
-
-    @classmethod
-    def additional_variables(cls) -> dict[str, str]:
-        return {
-            "package_path": cls.package_path(),
-            "storage_path": cls.server_path(),
-            "package_uri": cls.package_uri(),
-            "storage_uri": cls.server_uri(),
-        }
+        cls._server.on_pre_start_async(context)
 
     # internal methods
 
@@ -415,7 +357,7 @@ class LemminxPlugin(AbstractPlugin):
     def remove_server_dir(cls) -> None:
         from shutil import rmtree
 
-        server_path = cls.server_path()
+        server_path = cls.plugin_storage_path
         # Enable long path support on on Windows
         # to avoid errors when cleaning up paths with more than 256 chars.
         # see: https://stackoverflow.com/a/14076169/4643765
@@ -426,20 +368,16 @@ class LemminxPlugin(AbstractPlugin):
         rmtree(server_path, ignore_errors=True)
 
     @classmethod
-    def package_path(cls) -> str:
-        return os.path.join(sublime.packages_path(), cls.package_name)
+    def package_path(cls) -> Path:
+        return Path(sublime.packages_path(), cls.package_name)
 
     @classmethod
     def package_uri(cls) -> str:
-        return filename_to_uri(cls.package_path())
-
-    @classmethod
-    def server_path(cls) -> str:
-        return os.path.join(cls.storage_path(), cls.package_name)
+        return filename_to_uri(str(cls.package_path()))
 
     @classmethod
     def server_uri(cls) -> str:
-        return filename_to_uri(cls.server_path())
+        return filename_to_uri(str(cls.plugin_storage_path))
 
     @classmethod
     def install_schemas(cls) -> None:
@@ -448,9 +386,9 @@ class LemminxPlugin(AbstractPlugin):
 
         LemMinX can't read schemas or catalogs from zipped packages.
         """
-        dest_path = os.path.join(cls.server_path(), "cache", "sublime")
-        pkg_path = os.path.dirname(__file__)
-        if ".sublime-package" in pkg_path:
+        dest_path = Path(cls.plugin_storage_path, "cache", "sublime")
+        pkg_path = Path(__file__).parent
+        if pkg_path.suffix == ".sublime-package":
             with zipfile.ZipFile(file=pkg_path) as pkg:
                 for zipinfo in pkg.infolist():
                     if zipinfo.filename.startswith("schemas/"):
@@ -460,10 +398,10 @@ class LemminxPlugin(AbstractPlugin):
         else:
             import shutil
 
-            os.makedirs(dest_path, exist_ok=True)
-            src_path = os.path.join(pkg_path, "schemas")
-            for f in os.listdir(src_path):
-                shutil.copy(os.path.join(src_path, f), dest_path)
+            dest_path.mkdir(parents=True, exist_ok=True)
+            src_path = pkg_path / "schemas"
+            for f in src_path.iterdir():
+                shutil.copy(src_path / f, dest_path)
 
 
 def plugin_loaded() -> None:
@@ -472,9 +410,9 @@ def plugin_loaded() -> None:
     except OSError:
         print("LSP-lemminx: Unable to install schemes!")
 
-    register_plugin(LemminxPlugin)
+    LemminxPlugin.register()
 
 
 def plugin_unloaded() -> None:
     LemminxPlugin.cleanup()
-    unregister_plugin(LemminxPlugin)
+    LemminxPlugin.unregister()
