@@ -16,6 +16,17 @@ from LSP.plugin import LspPlugin, OnPreStartContext, filename_to_uri
 __all__ = ["LemminxPlugin", "plugin_loaded", "plugin_unloaded"]
 
 
+def version_tuple(value: str) -> tuple[int, int, int]:
+    """Naive function to compare versions."""
+    if value == 'latest':
+        return (999, 0, 0)
+    try:
+        v = value.split(".")
+        return (int(v[0]), int(v[1]), int(v[2]))
+    except Exception:
+        return (0, 0, 0)
+
+
 class BaseServerHandler:
     server_version: str = ""
 
@@ -149,11 +160,16 @@ class BinaryServerHandler(BaseServerHandler):
     @classmethod
     def download_url(cls) -> str:
         release_assets = {
-            "linux-x64": "lemminx-linux.zip" if version_tuple(cls.server_version) < version_tuple('0.29.1') else "lemminx-linux-x86_64.zip",
+            "linux-x64":  "lemminx-linux.zip",
             "osx-arm64": "lemminx-osx-aarch_64.zip",
             "osx-x64": "lemminx-osx-x86_64.zip",
             "windows-x64": "lemminx-win32.zip",
         }
+
+        if version_tuple(cls.server_version) >= version_tuple('0.29.1'):
+            release_assets["linux-arm64"] = "lemminx-linux-aarch_64.zip"
+            release_assets["linux-x64"] = "lemminx-linux-x86_64.zip"
+
         try:
             asset = release_assets[f"{sublime.platform()}-{sublime.arch()}"]
             return f"{cls.repo_url()}/releases/download/{cls.server_version}/{asset}"
@@ -167,11 +183,16 @@ class BinaryServerHandler(BaseServerHandler):
     @classmethod
     def server_binary(cls) -> Path:
         names = {
-            "linux-x64": "lemminx-linux" if version_tuple(cls.server_version) < version_tuple('0.29.1') else "lemminx-linux-x86_64",
+            "linux-x64": "lemminx-linux",
             "osx-arm64": "lemminx-osx-aarch_64",
             "osx-x64": "lemminx-osx-x86_64",
             "windows-x64": "lemminx-win32.exe",
         }
+
+        if version_tuple(cls.server_version) >= version_tuple('0.29.1'):
+            names["linux-arm64"] = "lemminx-linux-aarch_64"
+            names["linux-x64"] = "lemminx-linux-x86_64"
+
         try:
             name = names[f"{sublime.platform()}-{sublime.arch()}"]
             return LemminxPlugin.plugin_storage_path / name
@@ -183,17 +204,6 @@ class BinaryServerHandler(BaseServerHandler):
         arch = sublime.arch()
         os = sublime.platform()
         return arch == "x64" or os == "osx" and arch == "arm64"
-
-
-def version_tuple(value: str) -> tuple[int, int, int]:
-    ''' Naive function to compare versions. '''
-    if value == 'latest':
-        return (999, 0, 0)
-    try:
-        v = value.split(".")
-        return (int(v[0]), int(v[1]), int(v[2]))
-    except Exception:
-        return (0, 0, 0)
 
 
 class JavaServerHandler(BaseServerHandler):
