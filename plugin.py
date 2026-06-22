@@ -284,23 +284,23 @@ class LemminxPlugin(LspPlugin):
     file_associations: list[dict[str, str]] = [
         {
             "pattern": "**/*.sublime-snippet",
-            "systemId": "$storage_uri/cache/sublime/sublime-snippet.xsd",
+            "systemId": "$server_uri/cache/sublime/sublime-snippet.xsd",
         },
         {
             "pattern": "**/*.tmPreferences",
-            "systemId": "$storage_uri/cache/sublime/tmPreferences.xsd",
+            "systemId": "$server_uri/cache/sublime/tmPreferences.xsd",
         },
         {
             "pattern": "**/*.hidden-tmPreferences",
-            "systemId": "$storage_uri/cache/sublime/tmPreferences.xsd",
+            "systemId": "$server_uri/cache/sublime/tmPreferences.xsd",
         },
         {
             "pattern": "**/*.tmTheme",
-            "systemId": "$storage_uri/cache/sublime/tmTheme.xsd",
+            "systemId": "$server_uri/cache/sublime/tmTheme.xsd",
         },
         {
             "pattern": "**/*.hidden-tmTheme",
-            "systemId": "$storage_uri/cache/sublime/tmTheme.xsd",
+            "systemId": "$server_uri/cache/sublime/tmTheme.xsd",
         },
     ]
 
