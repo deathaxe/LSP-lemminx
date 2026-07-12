@@ -320,6 +320,12 @@ class LemminxPlugin(LspPlugin):
     @classmethod
     @override
     def on_pre_start_async(cls, context: OnPreStartContext) -> None:
+        # register additional variables
+        context.variables["package_path"] = str(cls.package_path())
+        context.variables["server_path"] = str(cls.plugin_storage_path)
+        context.variables["package_uri"] = cls.package_uri()
+        context.variables["server_uri"] = cls.server_uri()
+
         # add hard-coded and dynamic settings (not advertised via schema)
         context.configuration.settings.set(
             "xml.fileAssociations",
@@ -327,8 +333,13 @@ class LemminxPlugin(LspPlugin):
         )
         context.configuration.settings.set("xml.server.workDir", "$server_path")
         context.configuration.settings.set("xml.telemetry.enabled", False)
+
         # apply settings to initialization options
-        context.configuration.initialization_options.set("settings.xml", context.configuration.settings.get("xml"))
+        if xml_options := context.configuration.settings.get("xml"):
+            xml_options = sublime.expand_variables(xml_options, context.variables)
+            context.configuration.settings.set("xml", xml_options)
+            context.configuration.initialization_options.set("settings.xml", xml_options)
+
         # apply hard coded initialization options
         context.configuration.initialization_options.set("extendedClientCapabilities", {
             "actionableNotificationSupport": False,
@@ -336,12 +347,6 @@ class LemminxPlugin(LspPlugin):
             "bindingWizardSupport": False,
             "shouldLanguageServerExitOnShutdown": True,
         })
-
-        # register additional variables
-        context.variables["package_path"] = str(cls.package_path())
-        context.variables["server_path"] = str(cls.plugin_storage_path)
-        context.variables["package_uri"] = cls.package_uri()
-        context.variables["server_uri"] = cls.server_uri()
 
         # forward request to server provider
         if cls._server is None:
